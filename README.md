@@ -2,10 +2,32 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688.svg)](https://fastapi.tiangolo.com/)
-[![Gemini API](https://img.shields.io/badge/Model-Gemini%202.0%20Flash-orange.svg)](https://deepmind.google/technologies/gemini/)
+[![Gemini API](https://img.shields.io/badge/Model-Gemini%202.5%20Flash-orange.svg)](https://deepmind.google/technologies/gemini/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An enterprise-grade, asynchronous AI research agent built with a **Retrieval-Augmented Generation (RAG)** architecture. This system autonomously searches the web, ingests dynamic content, indexes data semantically, and synthesizes highly structured business reports.
+
+---
+
+## 🎬 Demo
+
+[![Watch the demo](https://img.shields.io/badge/▶_Watch_Demo-Loom-purple?style=for-the-badge)](https://www.loom.com/share/685e7590d82146eeabb574feefcc628b)
+
+---
+
+## 📸 Screenshots
+
+### Research Interface
+![AI Research Agent UI](docs/screenshots/agent_ui.png)
+> Deep Research mode with live token tracking, cost estimation, and multi-model RAG scoring
+
+### Backend API Docs
+![FastAPI Swagger UI](docs/screenshots/backend.png)
+> Interactive Swagger UI at `http://localhost:8000/docs`
+
+### Workflow Diagram
+![System Workflow](docs/screenshots/workflow.png)
+> End-to-end pipeline from user query to structured research report
 
 ---
 
@@ -31,7 +53,7 @@ The prototype is decoupled into a high-performance, async-native backend API and
 3. **Knowledge Acquisition:** Dynamically scrapes target URLs and chunks text.
 4. **Semantic Memory (ChromaDB):** Embeds chunks and retrieves the top-K most relevant snippets based on cosine similarity.
 5. **Prompt Orchestrator:** Injects retrieved context and formatting instructions into an XML-tagged system prompt.
-6. **Inference Engine (Gemini Flash):** Generates the final structured markdown report with inline citations.
+6. **Inference Engine (Gemini 2.5 Flash):** Generates the final structured markdown report with inline citations.
 
 ---
 
@@ -82,11 +104,13 @@ npm run dev
 
 To select the optimal technology stack, multiple Foundation Models (FMs) and orchestrators were evaluated based on **Context Window Depth**, **Unit Economics**, and **Inference Latency (TTFT)**.
 
-| Feature | Google Gemini (Flash) | OpenAI (GPT-4o) | CrewAI + Ollama |
+| Feature | Google Gemini 2.5 Flash | OpenAI (GPT-4o) | CrewAI + Ollama |
 |---|---|---|---|
+| **Context Window** | 1M tokens | 128k tokens | Depends on local model |
 | **Capabilities** | Massive context window, native multimodal, efficient RAG. | Best-in-class reasoning, highly standardized tool use. | Orchestration of multi-agent workflows, fully local. |
-| **Pricing** | Highly competitive, optimized for high-throughput reads. | Premium; higher token costs for maximum reasoning. | Free (Ollama), minimal infrastructure cost for agents. |
+| **Pricing** | $0.15 / 1M input tokens | $2.50 / 1M input tokens | Free (Ollama), infra cost only |
 | **Scalability** | Enterprise-grade, massive global infrastructure. | Industry standard, high availability. | High OpEx/CapEx; scaling requires custom GPU provisioning. |
+| **Limitations** | Occasional hallucination on niche topics | Premium cost at scale | Latency and hardware dependent |
 | **Verdict** | 🏆 **Selected for MVP** | Best for logic-heavy automation | Best for strict data sovereignty |
 
 ---
@@ -94,7 +118,7 @@ To select the optimal technology stack, multiple Foundation Models (FMs) and orc
 ## 🛠️ Tool Selection Reasoning
 
 - **Orchestration (FastAPI):** Selected over Flask/Django for its native `asyncio` support. Pydantic integration enforces strict payload validation (`min_length`), protecting upstream LLM APIs from malformed data.
-- **Inference Engine (Gemini 2.0 Flash):** The massive context window allows the system to ingest unrefined web scrapes without complex summarization chains, drastically reducing Time-to-First-Token (TTFT).
+- **Inference Engine (Gemini 2.5 Flash):** The 1M token context window allows the system to ingest unrefined web scrapes without complex summarization chains, drastically reducing Time-to-First-Token (TTFT). At $0.15/1M input tokens it is ~16x cheaper than GPT-4o for high-throughput research workloads.
 - **Vector Storage (ChromaDB):** Selected for the prototype due to its zero-configuration local deployment. Allows rapid iteration of chunking strategies without cloud database costs during R&D.
 
 ---
