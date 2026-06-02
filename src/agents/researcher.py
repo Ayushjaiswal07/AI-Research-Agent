@@ -11,59 +11,62 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-
 class AIResearchAgent:
     def __init__(self):
-        # Initialize the official Gemini SDK client
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.vector_store = VectorStoreManager()
+        self.vector_store = VectorStoreManager()  # Singleton — same instance as routes.py
         
     def run_research(self, topic: str) -> str:
         print(f"\n🚀 Starting AI Research Agent for: '{topic}'")
         
-        # 1. Clear previous memory for a fresh run
-        self.vector_store.clear_database()
+        # 1. Clear only web-scraped docs — preserve any uploaded files
+        self.vector_store.clear_web_documents()
         
         # 2. Search the web
         print("\n🔍 Step 1: Searching the web...")
         search_results = search_web(topic)
         
-        if not search_results:
-            return "Task Failed: I couldn't find any search results for that topic."
-            
-        # 3. Scrape and index
-        print("\n📚 Step 2: Reading and indexing sources...")
-        for res in search_results:
-            url = res['link']
-            print(f"  -> Extracting data from: {url}")
-            text = scrape_url(url)
-            
-            if text:
-                chunks = split_text(text)
-                # Create a simple hash to track the source URL
-                url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-                metadata = {"url": url, "url_hash": url_hash, "title": res['title']}
-                self.vector_store.add_documents(chunks, metadata)
+        # 3. Scrape and index web results (if any)
+        if search_results:
+            print("\n📚 Step 2: Reading and indexing web sources...")
+            for res in search_results:
+                url = res['link']
+                print(f"  -> Extracting data from: {url}")
+                text = scrape_url(url)
+                if text:
+                    chunks = split_text(text)
+                    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+                    metadata = {
+                        "url": url,
+                        "url_hash": url_hash,
+                        "title": res['title'],
+                        "source_type": "web",
+                    }
+                    self.vector_store.add_documents(chunks, metadata)
+        else:
+            print("\n⚠️  No web results found — will rely on uploaded documents only.")
                 
-        # 4. Retrieve most relevant information
+        # 4. Retrieve most relevant information (web + uploads combined)
         print("\n🧠 Step 3: Analyzing data (Vector RAG retrieval)...")
-        # We pull the top 5 most relevant chunks to give Gemini good context
         retrieved_docs = self.vector_store.query_similarity(topic, n_results=5)
         
         if not retrieved_docs:
-            return "Task Failed: Could not extract meaningful text from the sources."
+            return "Task Failed: No relevant information found. Try uploading a document or rephrasing your query."
             
         # Build the context string for the prompt
         context = "RETRIEVED CONTEXT:\n"
-        sources = set()
+        web_sources = set()
+        upload_sources = set()
         for i, doc in enumerate(retrieved_docs):
             context += f"--- Snippet {i+1} ---\n{doc['text']}\n\n"
-            sources.add(doc['metadata']['url'])
+            meta = doc['metadata']
+            if meta.get('source_type') == 'upload':
+                upload_sources.add(meta.get('title', 'Uploaded file'))
+            else:
+                web_sources.add(meta.get('url', ''))
             
         # 5. Generate final report
         print("\n✍️ Step 4: Generating final report using Gemini 2.5 Flash...")
-        
-        # Combine the system prompt, the user topic, and the RAG context
         full_prompt = f"{RESEARCHER_SYSTEM_PROMPT}\n\nRESEARCH TOPIC: {topic}\n\n{context}"
         
         try:
@@ -72,10 +75,12 @@ class AIResearchAgent:
                 contents=full_prompt,
             )
             
-            # Append the dynamic sources to the bottom of the report
             report = response.text + "\n\n---\n### 🔗 Sources Analyzed\n"
-            for source in sources:
-                report += f"* {source}\n"
+            for source in upload_sources:
+                report += f"* 📄 {source} *(uploaded document)*\n"
+            for source in web_sources:
+                if source:
+                    report += f"* {source}\n"
                 
             return report
             
