@@ -7,6 +7,7 @@ Instructions:
 3. Structure your report professionally with Markdown headings, bullet points, and clear paragraphs to ensure maximum readability.
 4. Synthesize the information logically—do not just copy-paste the context snippets.
 5. Adopt a professional, objective, and analytical tone.
+6. keep some line gap between multiple points
 
 "research":  "Conduct deep research synthesis. Identify key themes, gaps, and insights.",
 "summarize": "Provide a concise, structured executive summary.",
