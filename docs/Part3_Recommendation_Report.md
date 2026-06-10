@@ -1,64 +1,118 @@
 # Part 3: Architecture Recommendation & Production Strategy
 
 ## 1. System Architecture Overview
-The prototype implements a **Retrieval-Augmented Generation (RAG)** pipeline designed for asynchronous, high-throughput business research. 
 
-The architecture decouples the orchestration layer from the LLM inference engine, ensuring that heavy I/O tasks (like web scraping and vector embedding) do not block the main server thread.
+The prototype implements a **Retrieval-Augmented Generation (RAG)** pipeline designed for asynchronous research synthesis. The architecture decouples the orchestration layer from the LLM inference engine, ensuring that heavy I/O tasks (web scraping, vector embedding) do not block the main server thread.
 
-### The Pipeline Flow:
-1. **API Gateway (FastAPI):** Receives typed requests and validates schemas.
-2. **Intent Router:** Bypasses the heavy RAG pipeline for standard conversational queries to preserve API quotas.
-3. **Knowledge Acquisition:** Dynamically scrapes target URLs and chunks text.
-4. **Semantic Memory (ChromaDB):** Embeds chunks and retrieves the top-K most relevant snippets based on cosine similarity.
-5. **Prompt Orchestrator:** Injects the retrieved context and formatting instructions into an XML-tagged system prompt.
-6. **Inference (Gemini Flash):** Generates the final structured markdown report with inline citations.
+All inference runs **100% locally** via Ollama — no external API calls, no data sent to third-party servers, no ongoing cost.
+
+### Pipeline Flow
+
+1. **API Gateway (FastAPI):** Receives typed requests and validates schemas via Pydantic.
+2. **Intent Router:** Classifies the query into one of three paths before touching any retrieval pipeline:
+   - 💬 **Conversational** — answers directly from the LLM (e.g. "hi", "who are you").
+   - 🧠 **General Knowledge** — answers from the LLM's training data without web search (e.g. "what is RAG?").
+   - 🌐📂 **Full RAG** — web search and/or vector search over uploaded documents, then generates from retrieved context.
+3. **Knowledge Acquisition:** Searches the web via DuckDuckGo, scrapes target URLs, and chunks the text.
+4. **Semantic Memory (ChromaDB):** Embeds chunks using a local sentence-transformer (`all-MiniLM-L6-v2`) and retrieves the top-K most relevant snippets via cosine similarity.
+5. **Prompt Orchestrator:** Injects the retrieved context and formatting instructions into a structured system prompt.
+6. **Inference (Ollama):** Generates the final structured Markdown report — fully local, no API key required.
 
 ---
 
 ## 2. Tool & Model Selection Reasoning
 
 | Component | Technology | Engineering Rationale |
-| :--- | :--- | :--- |
-| **Orchestration** | `FastAPI` | Selected over Flask/Django for its native `asyncio` support and automatic OpenAPI (Swagger) documentation. Pydantic integration enforces strict payload validation (`min_length`), protecting upstream APIs from malformed data. |
-| **Inference Engine** | `Gemini 2.0 Flash` | Selected over GPT-4o for its superior unit economics in "heavy-read" workflows. The massive context window allows the system to ingest unrefined web scrapes without complex summarization chains, drastically reducing Time-to-First-Token (TTFT). |
-| **Vector Storage** | `ChromaDB` | Selected for the prototype due to its zero-configuration local deployment. It allows for rapid iteration of chunking strategies without incurring cloud database costs during the R&D phase. |
+|---|---|---|
+| **Orchestration** | `FastAPI` | Selected over Flask/Django for native `asyncio` support and automatic OpenAPI (Swagger) documentation. Pydantic integration enforces strict payload validation, protecting the pipeline from malformed data. |
+| **Inference Engine** | `Ollama` | Runs open-weight models (Qwen, Llama, Phi, Mistral) entirely on local hardware. Zero API cost, zero data leakage, works offline. Models are swappable via a single `.env` change. |
+| **Embedding Model** | `all-MiniLM-L6-v2` | Local sentence-transformer loaded by ChromaDB's built-in embedding function. No embedding API required — fast CPU inference with no external data transmission. |
+| **Vector Storage** | `ChromaDB` | Zero-configuration local deployment. Supports selective clearing (web chunks vs. upload chunks), enabling clean source isolation between research sessions. |
+| **Web Search** | `DuckDuckGo (ddgs)` | No API key required. Provides reliable search results for the research pipeline without any account setup. |
+| **Scraper** | `requests + BeautifulSoup` | Lightweight, customisable. Browser-like headers bypass basic anti-bot protections. Strips nav, footer, and sidebar noise before chunking. |
 
 ---
 
-## 3. Production Scaling Strategy
-While the prototype is functional, deploying this to an enterprise environment requires transitioning from a monolithic script to a distributed microservices architecture:
+## 3. Intent Routing Design
 
-1. **Stateful Vector Migration:** Replace local `ChromaDB` with a managed cloud solution like **Pinecone** or **pgvector** to support high-concurrency multi-tenant reads and writes.
-2. **Asynchronous Task Queues:** Move the `run_research` method into a **Celery worker + Redis** queue. Fast web requests should instantly return a `job_id`, allowing the frontend to poll for completion rather than holding HTTP connections open for 15+ seconds.
-3. **Advanced Retrieval:** Upgrade from pure cosine similarity to a **Hybrid Search** model (BM25 Keyword + Vector Semantic) combined with a Cross-Encoder Re-ranker to maximize context precision.
-4. **Observability:** Implement tracing tools like **LangSmith** or **Arize Phoenix** to monitor embedding drift, token usage per user, and generation latency.
+A key architectural decision is the three-path intent router in `src/agents/researcher.py`. Rather than running every query through the full RAG pipeline, the router classifies intent upfront:
 
----
+```
+Query
+  ├── Conversational?  → LLM direct reply (no retrieval)
+  ├── General knowledge + no uploads? → LLM from training data (no retrieval)
+  └── Everything else → Full RAG pipeline
+        ├── Has uploads + file intent? → Vector search only (skip web)
+        ├── Has uploads + good vector match? → Vector search only (skip web)
+        └── Default → Web search + vector search → LLM
+```
 
-## 4. Risks, Limitations & Mitigations
-
-During prototype development, several system constraints were identified:
-
-* **Network I/O Bottlenecks (`[WinError 10060]`):** * *Risk:* Synchronous LLM calls and web scrapers are highly susceptible to network timeouts or firewall drops.
-  * *Mitigation:* The system implements exponential backoff and retry logic in the `generate_content` wrapper to gracefully handle transient network failures.
-* **Context Dilution:**
-  * *Risk:* Returning too many chunks from the vector database can cause the LLM to lose focus on the core instruction.
-  * *Mitigation:* The Vector DB is strictly capped to return the top 5 chunks (`n_results=5`), and XML tags (`<retrieved_context>`) are used in the prompt to create hard semantic boundaries for the LLM.
-* **Web Scraper Blocking:**
-  * *Risk:* Standard HTTP requests are often blocked by corporate firewalls or Cloudflare.
-  * *Mitigation for Production:* Integrate rotating residential proxies (e.g., BrightData) or Headless browser automation (Playwright) for robust data extraction.
+This avoids unnecessary web scraping for simple questions, reduces latency significantly for conversational queries, and prevents irrelevant web context from polluting answers about uploaded documents.
 
 ---
 
-## 5. Estimated Infrastructure Cost (Scale: 10,000 Reports/Month)
-This architecture is optimized for low Operational Expenditure (OpEx). 
+## 4. Production Scaling Strategy
 
-| Infrastructure | Purpose | Est. Monthly Cost |
-| :--- | :--- | :--- |
-| **Google Cloud (Gemini API)** | LLM Inference & Embedding Generation | ~$40 - $60 |
-| **AWS AppRunner / Render** | Auto-scaling container hosting (API & Workers) | ~$25 - $50 |
-| **Pinecone (Standard)** | Cloud Vector Database | ~$70 |
-| **Proxy Service** | Unblocking web scrapers | ~$20 |
-| **Total Estimated OpEx** | **End-to-end automated research** | **~$155 - $200 / month** |
+The prototype is functional as a single-user local tool. Deploying to a multi-tenant production environment requires these architectural upgrades:
 
-*Conclusion: The system achieves an estimated cost of ~$0.02 per comprehensive research report, representing a massive ROI compared to manual analyst labor.*
+1. **Stateful Vector Migration:** Replace local ChromaDB with a managed cloud solution — **Pinecone** (serverless, easiest) or **pgvector** (PostgreSQL extension, best for enterprises already using SQL) — to support high-concurrency reads and writes across multiple users.
+
+2. **Asynchronous Task Queue:** Move `run_research` into a **Celery + Redis** worker queue. API requests should immediately return a `job_id`, with the frontend polling for completion — rather than holding an HTTP connection open for 15–60 seconds during scraping and inference.
+
+3. **Model Serving at Scale:** Replace Ollama (single-user, local) with **vLLM** or **Text Generation Inference (TGI)** for production-grade throughput, continuous batching, and quantisation support on GPU clusters.
+
+4. **Hybrid Retrieval:** Upgrade from pure cosine similarity to a **Hybrid Search** model combining BM25 keyword search with vector semantic search, plus a cross-encoder re-ranker to maximise context precision for complex queries.
+
+5. **Observability:** Implement tracing with **LangSmith** or **Arize Phoenix** to monitor embedding drift, token usage per user, retrieval hit rates, and generation latency over time.
+
+---
+
+## 5. Identified Risks & Mitigations
+
+| Risk | Description | Mitigation |
+|---|---|---|
+| **Network I/O Bottlenecks** | Web scraping and LLM generation are susceptible to timeouts | Error handling with graceful fallback to model knowledge if scraping/search fails |
+| **Context Dilution** | Too many retrieved chunks cause the LLM to lose focus | Retrieval capped at `n_results=5`; structured prompt separates uploaded vs. web context with clear headers |
+| **Web Scraper Blocking** | Cloudflare or corporate firewalls block HTTP requests | Browser-like headers implemented; for production, use rotating proxies (BrightData) or Playwright headless browser |
+| **Context Window Limits** | Local models have 8K–128K context vs. 1M for cloud models | Chunk size (1000 chars) and retrieval count (5 chunks) tuned to stay within safe context limits for small models |
+| **Model Compatibility** | Newer model architectures (Gemma4, some Llama3.2 variants) crash on older GPUs via Ollama | Tested stable models: `qwen2.5:3b`, `phi3:mini`, `mistral:7b`. Documented in README. |
+
+---
+
+## 6. Estimated Infrastructure Cost
+
+### Local / Self-hosted (Current Setup)
+
+| Component | Cost |
+|---|---|
+| Ollama + local model | Free |
+| ChromaDB (embedded) | Free |
+| DuckDuckGo search | Free |
+| **Total** | **$0 / month** |
+
+### Cloud Production (10,000 Reports/Month Estimate)
+
+Assumes migration to a hosted LLM API and cloud infrastructure for scale:
+
+| Infrastructure | Provider | Est. Monthly Cost |
+|---|---|---|
+| **LLM Inference** | Self-hosted vLLM on GPU VM (e.g. Vast.ai RTX 4090) | ~$80–120 |
+| **App Hosting** | AWS AppRunner / Render (auto-scaling) | ~$25–50 |
+| **Vector Storage** | Pinecone Serverless (~1M vectors) | ~$30 |
+| **Web Search** | Serper.dev (10K queries) | ~$10 |
+| **Total OpEx** | **10,000 automated research reports** | **~$145–210 / month** |
+
+> At 10,000 reports/month, the system achieves an estimated cost of **~$0.015–0.021 per report**, representing a substantial ROI compared to manual analyst labour.
+
+---
+
+## 7. Conclusion
+
+The current architecture achieves a strong balance of capability and practicality for a local research agent:
+
+- **Zero ongoing cost** — no API fees, all inference is local.
+- **Full data privacy** — nothing leaves the user's machine.
+- **Portable** — runs on any developer laptop with a GPU, no cloud account required.
+- **Modular** — the intent router, vector store, scraper, and LLM are loosely coupled and independently replaceable.
+
+The production scaling path is clear: swap ChromaDB → Pinecone, Ollama → vLLM, and add Celery workers — without changing the core agent logic.
