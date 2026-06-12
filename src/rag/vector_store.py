@@ -1,6 +1,6 @@
 import chromadb
 from chromadb.utils import embedding_functions
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from src.config import settings
 import logging
 
@@ -83,3 +83,99 @@ class VectorStoreManager:
             logger.info("Vector database fully cleared.")
         except Exception as e:
             logger.error(f"Failed to clear database: {e}")
+
+    # ── File management methods ───────────────────────────────────────────────
+
+    def list_uploaded_files(self) -> List[Dict[str, Any]]:
+        """Return a deduplicated list of uploaded files with metadata."""
+        collection = self._get_collection()
+        try:
+            results = collection.get(where={"source_type": {"$eq": "upload"}})
+            seen = {}
+            for meta in results.get("metadatas", []):
+                title = meta.get("title", "unknown")
+                url_hash = meta.get("url_hash", "")
+                if url_hash not in seen:
+                    seen[url_hash] = {
+                        "filename": title,
+                        "url_hash": url_hash,
+                        "chunk_count": 1,
+                    }
+                else:
+                    seen[url_hash]["chunk_count"] += 1
+            return list(seen.values())
+        except Exception as e:
+            logger.error(f"Failed to list uploaded files: {e}")
+            return []
+
+    def delete_uploaded_file(self, url_hash: str) -> int:
+        """Delete all chunks belonging to a specific uploaded file by its url_hash."""
+        collection = self._get_collection()
+        try:
+            results = collection.get(
+                where={
+                    "$and": [
+                        {"source_type": {"$eq": "upload"}},
+                        {"url_hash": {"$eq": url_hash}},
+                    ]
+                }
+            )
+            ids_to_delete = results.get("ids", [])
+            if ids_to_delete:
+                collection.delete(ids=ids_to_delete)
+                logger.info(f"Deleted {len(ids_to_delete)} chunks for file hash '{url_hash}'.")
+            return len(ids_to_delete)
+        except Exception as e:
+            logger.error(f"Failed to delete file {url_hash}: {e}")
+            return 0
+
+    def query_selected_files(
+        self,
+        query: str,
+        selected_hashes: List[str],
+        n_results: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Semantic search restricted to a specific subset of uploaded files."""
+        collection = self._get_collection()
+        try:
+            where_filter = {
+                "$and": [
+                    {"source_type": {"$eq": "upload"}},
+                    {"url_hash": {"$in": selected_hashes}},
+                ]
+            }
+            results = collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where=where_filter,
+            )
+            formatted = []
+            if results and results["documents"] and results["documents"][0]:
+                docs = results["documents"][0]
+                metas = results["metadatas"][0] if results["metadatas"] else [{}] * len(docs)
+                distances = results["distances"][0] if results["distances"] else [1.0] * len(docs)
+                for doc, meta, dist in zip(docs, metas, distances):
+                    formatted.append({"text": doc, "metadata": meta, "score": dist})
+            return formatted
+        except Exception as e:
+            logger.warning(f"Selected-file query failed: {e}")
+            return []
+
+    def get_all_chunks_for_files(self, selected_hashes: List[str]) -> List[Dict[str, Any]]:
+        """Fetch all chunks for selected files without semantic filtering."""
+        collection = self._get_collection()
+        try:
+            where_filter = {
+                "$and": [
+                    {"source_type": {"$eq": "upload"}},
+                    {"url_hash": {"$in": selected_hashes}},
+                ]
+            }
+            results = collection.get(where=where_filter)
+            chunks = []
+            for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+                chunks.append({"text": doc, "metadata": meta, "score": 0.0})
+            return chunks
+        except Exception as e:
+            logger.warning(f"Failed to fetch chunks for selected files: {e}")
+            return []
