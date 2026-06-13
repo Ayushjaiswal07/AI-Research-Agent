@@ -1,28 +1,45 @@
-import { X } from 'lucide-react';
+import { X, Trash2, Clock } from 'lucide-react';
 import { useResearch } from '../../context/ResearchContext';
 
 const TOOL_SCORES = [
-  { name: 'Ollama (Local)', score: 95, color: 'bg-blue-500',  reason: 'Privacy + Zero Cost' },
-  { name: 'ChromaDB',       score: 90, color: 'bg-purple-500', reason: 'Vector Storage'     },
-  { name: 'DuckDuckGo',     score: 82, color: 'bg-teal-500',   reason: 'Web Search'         },
-  { name: 'MiniLM-L6-v2',  score: 88, color: 'bg-orange-400', reason: 'Embeddings'         },
+  { name: 'Ollama (Local)', score: 95, color: 'bg-blue-500',   reason: 'Privacy + Zero Cost' },
+  { name: 'ChromaDB',       score: 90, color: 'bg-purple-500', reason: 'Vector Storage'      },
+  { name: 'DuckDuckGo',     score: 82, color: 'bg-teal-500',   reason: 'Web Search'          },
+  { name: 'MiniLM-L6-v2',  score: 88, color: 'bg-orange-400', reason: 'Embeddings'          },
 ];
 
 const INTENT_PATHS = [
-  { icon: '💬', label: 'Conversational',      color: 'text-green-400'  },
+  { icon: '💬', label: 'Conversational',       color: 'text-green-400'  },
   { icon: '🧠', label: 'Brain (no retrieval)', color: 'text-purple-400' },
-  { icon: '📂', label: 'Vector search',        color: 'text-yellow-400' },
-  { icon: '🌐', label: 'Web → RAG',            color: 'text-sky-400'    },
+  { icon: '📂', label: 'Vector search',         color: 'text-yellow-400' },
+  { icon: '🌐', label: 'Web → RAG',             color: 'text-sky-400'    },
 ];
 
+function formatTs(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  } catch { return iso; }
+}
+
 export default function RightPanel({ onClose }) {
-  const { sessionStats, uploadedFiles, selectedHashes } = useResearch();
+  const {
+    sessionStats, uploadedFiles, selectedHashes,
+    chatHistory, clearHistory,
+  } = useResearch();
 
   const doneFiles   = uploadedFiles.filter((f) => f.status === 'done');
   const totalChunks = doneFiles.reduce((acc, f) => acc + (f.chunk_count || 0), 0);
 
+  // Show most recent first
+  const recentHistory = [...chatHistory].reverse().slice(0, 30);
+
   return (
-    <div className="flex flex-col h-full p-4 gap-5">
+    <div className="flex flex-col h-full p-4 gap-5 overflow-y-auto">
 
       {/* Header */}
       <div className="flex items-center justify-between shrink-0">
@@ -30,7 +47,6 @@ export default function RightPanel({ onClose }) {
         <button
           onClick={onClose}
           className="text-gray-500 hover:text-white transition-colors p-1 rounded-md hover:bg-white/10"
-          title="Close panel"
         >
           <X size={16} />
         </button>
@@ -42,8 +58,8 @@ export default function RightPanel({ onClose }) {
           Session Stats
         </p>
         <div className="flex flex-col gap-2">
-          <StatCard label="Queries"       value={sessionStats.queries}              sub="this session" />
-          <StatCard label="Chunks Indexed" value={totalChunks.toLocaleString()}     sub={`${doneFiles.length} file${doneFiles.length !== 1 ? 's' : ''}`} />
+          <StatCard label="Queries"        value={sessionStats.queries}          sub="this session" />
+          <StatCard label="Chunks Indexed" value={totalChunks.toLocaleString()}  sub={`${doneFiles.length} file${doneFiles.length !== 1 ? 's' : ''}`} />
           <StatCard
             label="File Filter"
             value={selectedHashes.length === 0 ? 'All docs' : `${selectedHashes.length} selected`}
@@ -51,6 +67,52 @@ export default function RightPanel({ onClose }) {
             highlight={selectedHashes.length > 0}
           />
         </div>
+      </section>
+
+      <div className="h-px bg-white/5 shrink-0" />
+
+      {/* Chat History */}
+      <section className="flex flex-col gap-2 min-h-0">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-1">
+            Chat History ({chatHistory.length})
+          </p>
+          {chatHistory.length > 0 && (
+            <button
+              onClick={clearHistory}
+              title="Clear all history"
+              className="text-gray-600 hover:text-red-400 transition-colors"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+        </div>
+
+        {recentHistory.length === 0 ? (
+          <p className="text-[11px] text-gray-600 px-1">No history yet. Ask something!</p>
+        ) : (
+          <div className="flex flex-col gap-1.5 overflow-y-auto max-h-64">
+            {recentHistory.map((entry) => (
+              <div
+                key={entry.id}
+                className="bg-gray-800/50 border border-white/5 rounded-lg px-3 py-2"
+              >
+                <div className="flex items-center gap-1 mb-1">
+                  <Clock size={10} className="text-gray-600 shrink-0" />
+                  <span className="text-[10px] text-gray-600 font-mono">
+                    {formatTs(entry.timestamp)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-300 font-medium truncate" title={entry.topic}>
+                  {entry.topic}
+                </p>
+                <p className="text-[10px] text-gray-500 mt-0.5 line-clamp-2">
+                  {entry.summary}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <div className="h-px bg-white/5 shrink-0" />

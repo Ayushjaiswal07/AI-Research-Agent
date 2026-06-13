@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from src.agents.researcher import AIResearchAgent
 from src.rag.vector_store import VectorStoreManager
+from src.memory.chat_memory import load_history, clear_history
 import logging
 import io
 import json
@@ -10,7 +11,7 @@ import asyncio
 import hashlib
 from pypdf import PdfReader
 from src.rag.chunker import split_text
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,14 +20,12 @@ agent        = AIResearchAgent()
 vector_store = VectorStoreManager()
 
 
-# ── Models ───────────────────────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class ResearchRequest(BaseModel):
     topic: str
     selected_file_hashes: Optional[List[str]] = None
-
-class ResearchResponse(BaseModel):
-    report: str
+    source_mode: Literal['auto', 'web', 'file', 'both'] = 'auto'
 
 class UploadResponse(BaseModel):
     message: str
@@ -44,13 +43,13 @@ class DeleteResponse(BaseModel):
     chunks_deleted: int
 
 
-# ── Upload ───────────────────────────────────────────────────────────────────
+# ── Upload ────────────────────────────────────────────────────────────────────
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     filename     = file.filename or "uploaded_file"
     content_type = file.content_type or ""
-    allowed_types = ["application/pdf", "text/plain"]
+    allowed_types      = ["application/pdf", "text/plain"]
     allowed_extensions = [".pdf", ".txt"]
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
@@ -59,7 +58,6 @@ async def upload_document(file: UploadFile = File(...)):
 
     try:
         raw_bytes = await file.read()
-
         if content_type == "application/pdf" or ext == ".pdf":
             reader = PdfReader(io.BytesIO(raw_bytes))
             text   = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
@@ -71,16 +69,15 @@ async def upload_document(file: UploadFile = File(...)):
 
         chunks = split_text(text)
         if not chunks:
-            raise HTTPException(status_code=422, detail="Text extraction produced no usable chunks.")
+            raise HTTPException(status_code=422, detail="No usable chunks from file.")
 
         file_hash = hashlib.md5(raw_bytes).hexdigest()[:8]
-        metadata  = {
+        vector_store.add_documents(chunks, {
             "url": f"uploaded://{filename}",
             "url_hash": file_hash,
             "title": filename,
             "source_type": "upload",
-        }
-        vector_store.add_documents(chunks, metadata)
+        })
         return UploadResponse(
             message=f"Successfully indexed '{filename}'.",
             filename=filename,
@@ -93,7 +90,7 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to process file: {e}")
 
 
-# ── List / Delete files ───────────────────────────────────────────────────────
+# ── Files ─────────────────────────────────────────────────────────────────────
 
 @router.get("/files", response_model=List[FileInfo])
 async def list_files():
@@ -116,19 +113,31 @@ async def delete_file(url_hash: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Research (SSE streaming) ──────────────────────────────────────────────────
+# ── History ───────────────────────────────────────────────────────────────────
+
+@router.get("/history")
+async def get_history():
+    try:
+        return load_history()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/history")
+async def delete_history():
+    try:
+        clear_history()
+        return {"message": "Chat history cleared."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Research (SSE) ────────────────────────────────────────────────────────────
 
 @router.post("/research")
 async def generate_research(request: ResearchRequest):
-    """
-    Streams Server-Sent Events. Each event is a JSON object:
-      { "type": "step",   "text": "🔍 Searching the web..." }
-      { "type": "step",   "text": "📚 Scraping 3 sources..." }
-      { "type": "report", "text": "<final markdown report>" }
-      { "type": "error",  "text": "<error message>" }
-    """
     async def event_stream():
-        loop = asyncio.get_event_loop()
+        loop  = asyncio.get_event_loop()
         queue = asyncio.Queue()
 
         def on_step(text: str):
@@ -139,17 +148,17 @@ async def generate_research(request: ResearchRequest):
                 report = agent.run_research(
                     request.topic,
                     selected_file_hashes=request.selected_file_hashes or [],
+                    source_mode=request.source_mode,
                     on_step=on_step,
                 )
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "report", "text": report})
             except Exception as e:
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error",  "text": str(e)})
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "text": str(e)})
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+                loop.call_soon_threadsafe(queue.put_nowait, None)
 
         import threading
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
+        threading.Thread(target=run, daemon=True).start()
 
         while True:
             event = await queue.get()
